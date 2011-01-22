@@ -1,0 +1,6 @@
+*~
+*.swp
+pom.xml
+*jar
+lib
+classes
