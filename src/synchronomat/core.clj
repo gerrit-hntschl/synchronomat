@@ -1,14 +1,19 @@
 (ns synchronomat.core (:gen-class)
-    (:refer-clojure :exclude [< <= = > >=])
+   (:refer-clojure :exclude [< <= = > >=])
     (:use [clojure.contrib.generic.comparison :only (< <= = > >= )]
-          [synchronomat.import-utils]
+          [synchronomat.import-utils :only (import-static-fields)]
+          [clojure.contrib.import-static :only (import-static)]
+          [clojure.contrib.java-utils :only (delete-file-recursively)]
           [clojure.contrib.duck-streams :only (reader)]
-          [synchronomat.file-test-utils :only (path-seq file)])
+          [clojure.contrib.seq-utils :only (fill-queue)]
+          [synchronomat.file-test-utils :only (path-seq file dir?)])
  (:import [java.nio.file WatchService 
                          FileSystem
                          FileSystems
+                         Files
                          Paths
                          Path
+                         SimpleFileVisitor
                          CopyOption
                          LinkOption]
           [java.nio.file.attribute Attributes
@@ -16,6 +21,14 @@
           [java.io IOException]))
 
 (import-static-fields java.nio.file.StandardCopyOption)
+(import-static java.nio.file.StandardWatchEventKind ENTRY_CREATE ENTRY_DELETE ENTRY_MODIFY OVERFLOW)
+(import-static java.nio.file.FileVisitResult CONTINUE SKIP_SUBTREE)
+
+(def all-watch-events (into-array java.nio.file.WatchEvent$Kind [ENTRY_CREATE 
+                                                                ENTRY_MODIFY 
+                                                                ENTRY_DELETE
+                                                                OVERFLOW]))
+
 
 (defmethod > [java.lang.Comparable java.lang.Comparable] 
   [this that]
@@ -23,7 +36,7 @@
 
 (defmethod = [java.lang.Comparable java.lang.Comparable] 
   [this that]
-  (= 0 (.compareTo this that)))
+  (== 0 (.compareTo this that)))
 
 (defmethod < [java.lang.Comparable java.lang.Comparable] 
   [this that]
@@ -56,14 +69,14 @@
   (.. FileSystems getDefault newWatchService))
 
 (defn path [path-name]
-      (.get Paths path-name))
+      (Paths/get path-name))
 
 (defn- copy-file 
       "Copies src path to dest path keeping file attributes
       and overwriting without prompting."
       [src dest]
       (try (.copyTo src dest keep-last-modified-and-overwrite)
-           (catch IOException e (format "Could not copy: %s: %s %n" src e))))
+           (catch IOException e (println (format "Could not copy: %s: %s %n" src e)))))
 
 (defn copy-folder 
       "Copies all files from the src folder into the dest folder.
@@ -79,6 +92,132 @@
                           (last-modified-time target-path)))
                  (copy-file src-path target-path)))))
 
+(defn delete-junk
+      "Removes all files and folders that are below dest 
+      but not in src"
+      [src-folder dest-folder]
+      (doseq [dest-path (path-seq dest-folder)]
+             (let [src-path (.resolve src-folder 
+                                      (.relativize dest-folder dest-path))]
+               (when (and (.exists dest-path) ; necessary because file might have been deleted already?
+                          (not (.exists src-path)))
+                 (delete-file-recursively (file dest-path))))))
 
+(defn mirror-folder
+      "Mirrors all files below src in dest."
+      [src-folder dest-folder]
+      (do 
+        (copy-folder src-folder dest-folder)
+        (delete-junk src-folder dest-folder)))
+
+
+
+(defn register 
+      "Registers the watcher for event-kinds at dir. Returns watchkey
+      for the directory"
+      [^WatchService watcher event-kinds dir]
+      (.register dir watcher event-kinds))
+
+(defn register-all
+      [watchkey->dir dir-to-watch watch-service]
+      (let [reg-dir (partial register watch-service all-watch-events)
+            visitor (proxy [SimpleFileVisitor] []
+                      (preVisitDirectory [dir atts]
+                          (try
+                            (swap! watchkey->dir assoc 
+                                   (reg-dir dir) dir)
+                            #_(println @watchkey->dir)
+                            CONTINUE
+                            (catch IOException e 
+                                   ;TODO add errors to error queue??
+                                   (println (format "could not register dir: %s -> %s" dir e))
+                                   SKIP_SUBTREE))))]
+            (Files/walkFileTree dir-to-watch visitor))) 
+
+(defn convert-event
+      "Takes a WatchEvent and a dir and converts it into a map
+      containing a key specifying the kind of event
+      and the file that is affected by the event."
+      [dir event]
+      {:type (condp = (.kind event)
+             ENTRY_CREATE :created
+             ENTRY_MODIFY :modified
+             ENTRY_DELETE :deleted
+             OVERFLOW :overflowed) 
+        :path (.resolve dir (.context event)) })
+
+
+(defn register-created-dirs 
+      "Takes a watchservice and a map containing the event-type
+      and affected dir and registers the dir at the watchservice
+      if dir was created. Returns the event."
+      [watchkey->dir watcher converted-event]
+      (do 
+        (when (= :created (:type converted-event))
+          (when-let [created-dir (dir? (:path converted-event))]
+                  (try 
+                    (register-all watchkey->dir created-dir watcher)
+                    (catch IOException e (println "AAAH"))))) 
+        converted-event))
+
+(defn reset-key
+      "Resets key and removes invalid keys from keymap"
+      [key watchkey->dir]
+      (let [valid (.reset key)]
+        (when-not valid
+                  (swap! watchkey->dir dissoc key))))
+
+
+(defn dir-event-seq
+      "Creates a lazy seq that is filled with directory events
+      that occured in dir"
+      [^Path dir-to-watch]
+      (let [watcher (create-watchservice)
+            watchkey->dir (atom {})]
+        (register-all watchkey->dir dir-to-watch watcher)
+        (fill-queue (fn [fill]
+                        (while true 
+                          (let [key (.take watcher)
+                                watched-dir (@watchkey->dir key)
+                                events (.pollEvents key)] 
+                            (doseq [event events]
+                                   (->> 
+                                     (convert-event watched-dir event)  
+                                     (register-created-dirs watchkey->dir watcher)
+                                     (fill)) 
+                                   (reset-key key watchkey->dir))))))))
+
+
+(defn event->fn "Returns a map from event-type to function "
+      [src dest]
+      (letfn [(src->dest [src-path]
+                                     (.resolve dest
+                                         (.relativize src src-path)))
+              (copy-relative [path]
+                                   (copy-file path 
+                                              (src->dest path)))
+              (delete-relative [deleted-path]
+                                  (delete-file-recursively 
+                                    (file (src->dest deleted-path))))]
+      (into {} (list [:created copy-relative]
+                     [:modified copy-relative]
+                     [:deleted delete-relative]))))
+
+
+(defn enqueue-action [delay-queue action path]
+      )
+
+
+(defn sync-dir
+      "Copies every file that is created in src into dest"
+      [src dest]
+      (let [action-table (event->fn src dest)]
+      (future ;don't block this thread
+        (doseq [event (dir-event-seq src)]
+               (println "event" event)              
+               #_((action-table (:type event)) (:path event))))))
+
+(defn -main [source dest & _]
+      (sync-dir (path source) (path dest)))
 
 

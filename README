@@ -1,1 +1,13 @@
-File synchronisation with Java 7 NIO & Clojure!
+# synchronomat
+
+Instant file synchronization (when it's finished)
+
+## Usage
+
+Nothing to use so far!
+
+## License
+
+Copyright (C) 2010 Gerrit Hentschel
+
+Distributed under the Eclipse Public License, the same as Clojure.

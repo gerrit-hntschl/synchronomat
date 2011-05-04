@@ -1,11 +1,14 @@
 (ns synchronomat.file-test-utils
-    (:use [clojure.contrib.java-utils :only (delete-file-recursively)])
+    (:use [clojure.contrib.java-utils :only (delete-file-recursively)]
+          [clojure.contrib.import-static :only (import-static)])
     (:import [java.io File] 
              [java.nio.file.attribute FileAttribute
                                       Attributes
                                       FileTime]
              [java.nio.file Path 
                             Files]))
+
+(import-static java.nio.file.LinkOption NOFOLLOW_LINKS)
 
 
 ; empty FileAttribute array needed for invocation of java vararg methods
@@ -153,8 +156,9 @@
 
 
 (defn dir? 
-      "Tests whether the given path represents an existing directory"
+      "Tests whether the given path represents an existing directory and returns the directory if it exists"
       [path]
-      (.isDirectory (file path)))
+      (when (and path (.isDirectory (Attributes/readBasicFileAttributes path (into-array [ NOFOLLOW_LINKS ])))) 
+        path))
 
 
