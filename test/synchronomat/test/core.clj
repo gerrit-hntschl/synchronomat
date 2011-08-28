@@ -1,6 +1,7 @@
 (ns synchronomat.test.core (:gen-class)
  (:use [synchronomat.core] :reload)
  (:use [clojure.test] 
+       [midje.sweet]
        [synchronomat.file-test-utils]
        [clojure.contrib.duck-streams :only (slurp*)]))
 
@@ -36,12 +37,12 @@
 
 (deftest copy-does-not-overwrite-file-when-last-modification-equal
   (let [a-file-name "file_to_not_copy"] 
-          (with-tmp-dirs [src [(comp (set-modified-to-fn 1000)
-                                     (spit-into-fn "should not be copied")
-                                     (create-file-fn a-file-name))]
-                          dest [(comp (set-modified-to-fn 1000)
+          (with-tmp-dirs [dest [(comp (set-modified-to-fn 1000)
                                       (spit-into-fn "expected")
-                                      (create-file-fn a-file-name))]]
+                                      (create-file-fn a-file-name))]
+                          src [(comp (set-modified-to-fn 1000)
+                                     (spit-into-fn "should not be copied")
+                                     (create-file-fn a-file-name))]]
                          (let [dest-file (subpath dest a-file-name)]
                            (copy-folder src dest)
                            (is (= "expected" (slurp* dest-file)))))))
@@ -92,18 +93,38 @@
                         (mirror-folder src dest)
                         (is (containing-files? ["file1"] dest))))
 
+; not working as expected
 #_(deftest sync-dir-copies-newly-created-file
-         (with-tmp-dirs [src  []
+         (with-tmp-dirs [src []
                          dest []]
-              (let [sync-future (sync-dir src dest) 
+              (let [sync-futures (sync-dir src dest) 
                     file-to-copy (create-file src "should.copy")]
-                (Thread/sleep 1000) ;TODO: how can we wait for syncing??
-                (future-cancel sync-future)
+                (println "before sleep")
+                (Thread/sleep 4000) ;TODO: how can we wait for syncing?? sleep seems to block the futures as well?!?
+                (map future-cancel sync-futures)
+                (println "shut down")
               (is (containing-files? ["should.copy"] dest))
               #_(is (= (last-modified-time file-to-copy)
                      (last-modified-time (subpath dest "should.copy")))))))
 
 
+(deftest enqueuing-several-actions-for-the-same-path-removes-previous-actions 
+         (let [dqueue (delay-queue)]
+           (dotimes [n 3]
+             (enqueue-action dqueue identity "abc"))
+           (is (= 1 (.size dqueue)))))
+
+(with-tmp-dirs [src ['exists ]
+                dest []] 
+               (facts "about bad input" 
+                      "non-existent src folder is not accepted" 
+                      (-main 
+                        (str (.toString src) "doesnotexist") 
+                        (.toString dest)) => (throws IllegalArgumentException (contains "Source"))
+                      "bad dest folder throws exception"
+                      (-main 
+                        (.toString dest)
+                        (str (.toString dest) "doesnotexist")) => (throws IllegalArgumentException (contains "Dest"))) )
 
 
 

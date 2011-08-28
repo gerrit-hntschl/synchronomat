@@ -1,5 +1,5 @@
 (ns synchronomat.core (:gen-class)
-   (:refer-clojure :exclude [< <= = > >=])
+   (:refer-clojure :exclude [< <= = > >= sync])
     (:use [clojure.contrib.generic.comparison :only (< <= = > >= )]
           [synchronomat.import-utils :only (import-static-fields)]
           [clojure.contrib.import-static :only (import-static)]
@@ -18,7 +18,8 @@
                          LinkOption]
           [java.nio.file.attribute Attributes
                                    BasicFileAttributes]
-          [java.io IOException]))
+          [java.io IOException]
+          [java.util.concurrent DelayQueue Delayed TimeUnit]))
 
 (import-static-fields java.nio.file.StandardCopyOption)
 (import-static java.nio.file.StandardWatchEventKind ENTRY_CREATE ENTRY_DELETE ENTRY_MODIFY OVERFLOW)
@@ -194,30 +195,76 @@
                                      (.resolve dest
                                          (.relativize src src-path)))
               (copy-relative [path]
-                                   (copy-file path 
+                             (do (println "copying" path (System/currentTimeMillis))
+                               (copy-file path 
                                               (src->dest path)))
+                                   )
               (delete-relative [deleted-path]
-                                  (delete-file-recursively 
-                                    (file (src->dest deleted-path))))]
+                               (do
+                                 (println "deleting" deleted-path (System/currentTimeMillis))
+                                 (delete-file-recursively 
+                                    (file (src->dest deleted-path))
+                                    "silently"))
+                                  )]
       (into {} (list [:created copy-relative]
                      [:modified copy-relative]
                      [:deleted delete-relative]))))
 
 
-(defn enqueue-action [delay-queue action path]
-      )
 
+(defn delay-queue [] (DelayQueue. ))
+
+(defprotocol SyncAction 
+             (sync-file [this]))
+
+(deftype DelayedSync [sync-f path creation-nanosecs]
+           Delayed
+           (getDelay [this time-unit]
+                     (.convert time-unit 
+                               (- (+ (.toNanos TimeUnit/SECONDS 1)
+                                     creation-nanosecs)
+                                  (System/nanoTime))
+                               TimeUnit/NANOSECONDS))
+           (compareTo [this that]
+                      (compare creation-nanosecs (.creation-nanosecs that)))
+           SyncAction
+           (sync-file [this] (sync-f path))
+           Object
+           (equals [this that]
+                   (= path (.path that)))
+           (hashCode [this]
+                     (.hashCode path)))
+
+
+(defn enqueue-action [delay-queue action path]
+      (let [dsync (DelayedSync. action path (System/nanoTime))]
+        (while (.remove delay-queue dsync))
+        (.put delay-queue dsync)) )
 
 (defn sync-dir
-      "Copies every file that is created in src into dest"
+      "Copies every file that is created or modified in src into dest"
       [src dest]
-      (let [action-table (event->fn src dest)]
-      (future ;don't block this thread
+      (let [action-table (event->fn src dest)
+                         dq (delay-queue) ]
+      [(future ;don't block this thread
         (doseq [event (dir-event-seq src)]
-               (println "event" event)              
-               #_((action-table (:type event)) (:path event))))))
+               (println "event" event (System/currentTimeMillis))
+               (enqueue-action dq (action-table (:type event)) (:path event))))
+       (future 
+         (do 
+           (println "listening...") 
+           (while true
+               (let [task (.take dq)]
+                 (println "syncing" task (System/currentTimeMillis))
+               (sync-file task))))
+        )]))
 
 (defn -main [source dest & _]
-      (sync-dir (path source) (path dest)))
+      (let [src (path source)
+            dest (path dest)]
+        (cond 
+          (not (.exists src)) (throw (IllegalArgumentException. "Source folder does not exist")) 
+          (not (.exists dest)) (throw (IllegalArgumentException. "Destination folder does not exist")) 
+          :else (sync-dir src dest))))
 
 

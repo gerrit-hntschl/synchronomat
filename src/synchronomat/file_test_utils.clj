@@ -10,6 +10,7 @@
 
 (import-static java.nio.file.LinkOption NOFOLLOW_LINKS)
 
+(def TMP-FOLDER-NAME "clj-tmptestfolder")
 
 ; empty FileAttribute array needed for invocation of java vararg methods
 (def no-atts (into-array FileAttribute []))
@@ -17,10 +18,11 @@
 (defn create-tmp-folder 
       "Creates a temporary folder and returns a path to the created folder."
       []
-      (let [dir (File/createTempFile "clj-tmptestfolder" "")]
+      (let [dir (File/createTempFile TMP-FOLDER-NAME "")]
         (doto dir
             (.delete)
-            (.mkdir))
+            (.mkdir)
+            (.deleteOnExit))
         (.toPath dir)))
 
 

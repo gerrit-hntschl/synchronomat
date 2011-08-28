@@ -2,8 +2,21 @@
   (:use [synchronomat.file-test-utils] :reload)
   (:use [clojure.test]
         [clojure.contrib.duck-streams :only (slurp*)]
+        [clojure.contrib.io :only (delete-file-recursively)]
         [synchronomat.core])
-  (:import [java.nio.file.attribute FileTime]))
+  (:import [java.nio.file.attribute FileTime]
+           [java.io File]))
+
+(use-fixtures :each (fn clear-tmpdir-before-test [test]
+                        (do
+                          (dorun 
+                            (->> (System/getProperty "java.io.tmpdir")
+                              (File.) 
+                              (.listFiles)
+                              (filter (fn [file] 
+                                          (.contains (.getAbsolutePath file) TMP-FOLDER-NAME))) 
+                              (map delete-file-recursively)))
+                          (test))))
 
 (deftest can-create-tmp-folder
          (is (not (nil? (create-tmp-folder)) ) )) 
