@@ -100,7 +100,7 @@
       (doseq [dest-path (path-seq dest-folder)]
              (let [src-path (.resolve src-folder 
                                       (.relativize dest-folder dest-path))]
-               (when (and (.exists dest-path) ; necessary because file might have been deleted already?
+               (when (and (.exists dest-path) ; necessary because file might have been deleted already
                           (not (.exists src-path)))
                  (delete-file-recursively (file dest-path))))))
 
@@ -127,11 +127,9 @@
                           (try
                             (swap! watchkey->dir assoc 
                                    (reg-dir dir) dir)
-                            #_(println @watchkey->dir)
                             CONTINUE
                             (catch IOException e 
-                                   ;TODO add errors to error queue??
-                                   (println (format "could not register dir: %s -> %s" dir e))
+                                   (println (format "could not register dir: %s -> %s" dir (.getMessage e)))
                                    SKIP_SUBTREE))))]
             (Files/walkFileTree dir-to-watch visitor))) 
 
@@ -158,7 +156,7 @@
           (when-let [created-dir (dir? (:path converted-event))]
                   (try 
                     (register-all watchkey->dir created-dir watcher)
-                    (catch IOException e (println "AAAH"))))) 
+                    (catch IOException e (println (format "could not register dir: %s -> %s" created-dir (.getMessage e))))))) 
         converted-event))
 
 (defn reset-key

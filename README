@@ -1,10 +1,10 @@
 # synchronomat
 
-Instant file synchronization (when it's finished)
+Instant file synchronization 
 
 ## Usage
 
-Nothing to use so far!
+(-main "/path/to/source/folder" "/path/to/dest/folder")
 
 ## License
 
